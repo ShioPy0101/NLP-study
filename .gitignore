@@ -1,0 +1,50 @@
+
+# 仮想環境
+vtokyo/
+venv/
+.env/
+
+# Pythonキャッシュ
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ビルド・配布
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ログ
+*.log
+
+# 環境変数
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# 大容量データ
+data/
+*.csv
+*.parquet
+
+# 学習結果
+models/
+checkpoints/
+
+# 可視化出力
+outputs/
+*.png
+*.mp4
+
+jawiki*
