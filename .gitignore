@@ -48,3 +48,10 @@ outputs/
 *.mp4
 
 jawiki*
+
+*.txt
+sentencepiece.model
+sentencepiece.vocab
+sed*
+*.pkl
+text
