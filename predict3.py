@@ -1,22 +1,19 @@
-import math
+import argparse
+import json
 import pickle
 import random
 from collections import Counter
+from pathlib import Path
 
 import sentencepiece as spm
 
 
-sp = spm.SentencePieceProcessor()
-sp.Load("sentencepiece.model")
-
-with open("bigram_model.pkl", "rb") as f:
-    model = pickle.load(f)
-
-print("モデルのロードが完了しました。")
-
+BASE_DIR = Path(__file__).resolve().parent
+SENTENCEPIECE_MODEL_PATH = BASE_DIR / "sentencepiece.model"
+BIGRAM_MODEL_PATH = BASE_DIR / "bigram_model.pkl"
 
 BAD_TOKENS = {
-    "<BOS>","「", "」", "『", "』" , "[", "]", "(", ")", "{", "}",
+    "<BOS>", "「", "」", "『", "』", "[", "]", "(", ")", "{", "}",
 }
 
 # 先頭や途中で出ると不自然になりやすいものを弱める
@@ -24,6 +21,19 @@ NOISY_TOKENS = {
     "「", "」", "『", "』", "[", "]", "(", ")", "{", "}",
     "A", "B", "C", ".", ",", ":", ";", "*", "=",
 }
+
+
+def load_resources(
+    sentencepiece_model_path: Path = SENTENCEPIECE_MODEL_PATH,
+    bigram_model_path: Path = BIGRAM_MODEL_PATH,
+):
+    sp = spm.SentencePieceProcessor()
+    sp.Load(str(sentencepiece_model_path))
+
+    with open(bigram_model_path, "rb") as f:
+        model = pickle.load(f)
+
+    return sp, model
 
 
 def is_ascii_fragment(token: str) -> bool:
@@ -119,10 +129,7 @@ def generate_long_text(
             min_len_before_eos=min_len_before_eos,
         )
 
-        if nxt is None:
-            break
-
-        if nxt == "<EOS>":
+        if nxt is None or nxt == "<EOS>":
             break
 
         generated_pieces.append(nxt)
@@ -130,20 +137,44 @@ def generate_long_text(
         prev = nxt
 
     generated_pieces = [p for p in generated_pieces if p not in ("<BOS>", "<EOS>")]
-    text = sp.decode(generated_pieces)
+    return sp.decode(generated_pieces)
 
-    return text
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "prompt",
+        nargs="?",
+        default="お客様に警戒警備のお願いです駅構内車内で不審なものを見かけましたらお近くの東京メトロ社員または",
+    )
+    parser.add_argument("--max-tokens", type=int, default=220)
+    parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument("--temperature", type=float, default=0.95)
+    parser.add_argument("--min-len-before-eos", type=int, default=80)
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def main():
+    args = build_arg_parser().parse_args()
+    sp, model = load_resources()
+    print("モデルのロードが完了しました。")
+    text = generate_long_text(
+        args.prompt,
+        sp,
+        model,
+        max_tokens=args.max_tokens,
+        top_k=args.top_k,
+        temperature=args.temperature,
+        min_len_before_eos=args.min_len_before_eos,
+    )
+
+    if args.json:
+        print(json.dumps({"text": text}, ensure_ascii=False))
+        return
+
+    print(text)
 
 
 if __name__ == "__main__":
-    prompt = "お客様に警戒警備のお願いです駅構内車内で不審なものを見かけましたらお近くの東京メトロ社員または"
-    text = generate_long_text(
-        prompt,
-        sp,
-        model,
-        max_tokens=220,
-        top_k=20,
-        temperature=0.95,
-        min_len_before_eos=80,
-    )
-    print(text)
+    main()
