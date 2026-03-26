@@ -1,6 +1,8 @@
 
 # 仮想環境
 vtokyo/
+vtokyo-venv/
+vtokyo301/
 venv/
 .env/
 
