@@ -7,7 +7,7 @@ from predict3 import generate_long_text, load_resources
 HOST = "127.0.0.1"
 PORT = 8000
 
-SP, MODEL = load_resources()
+SP, MODEL, MODEL_TYPE = load_resources()
 
 
 class GenerateHandler(BaseHTTPRequestHandler):
@@ -56,6 +56,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
             prompt,
             SP,
             MODEL,
+            MODEL_TYPE,
             max_tokens=max_tokens,
             top_k=top_k,
             temperature=temperature,
