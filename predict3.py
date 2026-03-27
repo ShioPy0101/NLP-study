@@ -1,4 +1,5 @@
 import argparse
+import collections
 import json
 import heapq
 import pickle
@@ -32,6 +33,41 @@ def strip_symbols(text: str) -> str:
             continue
         kept.append(ch)
     return "".join(kept)
+
+
+def is_cacheable_token(token_id: int, sp) -> bool:
+    if token_id in {BOS_ID, EOS_ID}:
+        return False
+
+    piece = sp.IdToPiece(token_id)
+    if not piece:
+        return False
+
+    normalized = strip_symbols(piece.replace("▁", "").strip())
+    return bool(normalized)
+
+
+def build_cache_scores(
+    context_ids: list[int],
+    sp,
+    recent_window: int,
+) -> dict[int, float]:
+    cache_scores: collections.defaultdict[int, float] = collections.defaultdict(float)
+
+    if recent_window > 0:
+        recent_tokens = [token_id for token_id in context_ids[-recent_window:] if is_cacheable_token(token_id, sp)]
+        recent_len = len(recent_tokens)
+        for index, token_id in enumerate(recent_tokens):
+            # 直近トークンほど強く効かせる。
+            cache_scores[token_id] += (index + 1) / max(recent_len, 1)
+
+    sentence_counts = collections.Counter(
+        token_id for token_id in context_ids if is_cacheable_token(token_id, sp)
+    )
+    for token_id, count in sentence_counts.items():
+        cache_scores[token_id] += count ** 0.5
+
+    return dict(cache_scores)
 
 
 class ShardedTrigramModel:
@@ -154,6 +190,8 @@ def load_resources(
 
 def choose_next_token_from_counts(
     next_tokens: dict[int, int] | list[tuple[int, int]] | None,
+    cache_scores: dict[int, float] | None = None,
+    cache_alpha: float = 0.18,
     top_k: int = 20,
     temperature: float = 0.95,
     generated_len: int = 0,
@@ -181,6 +219,9 @@ def choose_next_token_from_counts(
                 weight *= 0.03
             else:
                 weight *= 0.5
+
+        if cache_scores:
+            weight *= 1.0 + cache_alpha * cache_scores.get(token_id, 0.0)
 
         weight = max(weight, 1e-8)
         adjusted_items.append((token_id, weight ** (1.0 / temperature)))
@@ -214,6 +255,8 @@ def generate_long_text(
     top_k: int = 8,
     temperature: float = 0.95,
     min_len_before_eos: int = 32,
+    cache_alpha: float = 0.18,
+    cache_recent_window: int = 48,
 ) -> str:
     prompt_ids = sp.encode(prompt, out_type=int)
     generated_ids = prompt_ids[:]
@@ -236,8 +279,12 @@ def generate_long_text(
         if next_counts is None:
             break
 
+        cache_scores = build_cache_scores(context_ids, sp, recent_window=cache_recent_window)
+
         nxt = choose_next_token_from_counts(
             next_counts,
+            cache_scores=cache_scores,
+            cache_alpha=cache_alpha,
             top_k=top_k,
             temperature=temperature,
             generated_len=generated_token_count,
@@ -265,6 +312,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--temperature", type=float, default=0.95)
     parser.add_argument("--min-len-before-eos", type=int, default=32)
+    parser.add_argument("--cache-alpha", type=float, default=0.18)
+    parser.add_argument("--cache-recent-window", type=int, default=48)
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -282,6 +331,8 @@ def main():
         top_k=args.top_k,
         temperature=args.temperature,
         min_len_before_eos=args.min_len_before_eos,
+        cache_alpha=args.cache_alpha,
+        cache_recent_window=args.cache_recent_window,
     )
 
     if args.json:
