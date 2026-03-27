@@ -58,3 +58,7 @@ sed*
 *.pkl
 text
 *.sqlite
+
+ng.txt
+
+*.csv
