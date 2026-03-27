@@ -47,10 +47,10 @@ class GenerateHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "prompt must be a non-empty string"})
             return
 
-        max_tokens = int(payload.get("max_tokens", 220))
-        top_k = int(payload.get("top_k", 20))
+        max_tokens = int(payload.get("max_tokens", 80))
+        top_k = int(payload.get("top_k", 8))
         temperature = float(payload.get("temperature", 0.95))
-        min_len_before_eos = int(payload.get("min_len_before_eos", 80))
+        min_len_before_eos = int(payload.get("min_len_before_eos", 32))
 
         text = generate_long_text(
             prompt,

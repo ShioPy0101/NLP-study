@@ -57,3 +57,4 @@ sentencepiece.vocab
 sed*
 *.pkl
 text
+*.sqlite
