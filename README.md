@@ -1,6 +1,8 @@
 # NLP-study
 
-SentencePiece で分割した日本語テキストから、bigram / trigram の簡易言語モデルや neural n-gram を作って文章生成する実験用リポジトリです。現状は `wiki.txt` を入力にして学習し、`predict3.py` または HTTP サーバー経由で推論できます。
+SentencePiece で分割した日本語テキストから、bigram / trigram の簡易言語モデルや neural n-gram を作って文章生成する実験用リポジトリです。
+
+ `wiki.txt` を入力にして学習し、`predict3.py` または HTTP サーバー経由で推論できます。
 
 ## 主なファイル
 
