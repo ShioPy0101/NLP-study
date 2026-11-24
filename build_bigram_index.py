@@ -10,6 +10,8 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import os
 import re
+from collections import defaultdict, Counter
+from itertools import islice
 
 
 CS_CATEGORY = re.compile(r'\[\[\s*(?:Category|カテゴリ)\s*:\s*([^|\]\n]+)', re.IGNORECASE)
@@ -44,6 +46,42 @@ def pages(source):
         root.remove(elem)
 
 
+def append_varint(out, value):
+    while value >= 128:
+        out.append((value & 127) | 128)
+        value >>= 7
+    out.append(value)
+
+
+def decode_ids(blob):
+    value = shift = previous = 0
+    for byte in blob:
+        value |= (byte & 127) << shift
+        if byte & 128:
+            shift += 7
+            if shift >= 64:
+                raise ValueError("invalid varint")
+        else:
+            previous += value
+            yield previous
+            value = shift = 0
+    if shift:
+        raise ValueError("truncated varint")
+
+
+def intersect(a, b):
+    a, b = iter(a), iter(b)
+    x, y = next(a, None), next(b, None)
+    while x is not None and y is not None:
+        if x == y:
+            yield x
+            x, y = next(a, None), next(b, None)
+        elif x < y:
+            x = next(a, None)
+        else:
+            y = next(b, None)
+
+
 def build(input_path, output_path, limit=0, batch_size=1000):
     input_path, output_path = Path(input_path), Path(output_path)
     if limit < 0 or batch_size < 1:
@@ -60,23 +98,41 @@ def build(input_path, output_path, limit=0, batch_size=1000):
             conn.executescript("""
                 CREATE TABLE documents (
                     id INTEGER PRIMARY KEY,
+                    wiki_id INTEGER NOT NULL,
                     title TEXT NOT NULL,
                     url TEXT NOT NULL
                 );
                 CREATE TABLE postings (
+                    gram TEXT PRIMARY KEY,
+                    doc_count INTEGER NOT NULL,
+                    doc_ids BLOB NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE chunks (
                     gram TEXT NOT NULL,
-                    doc_id INTEGER NOT NULL REFERENCES documents(id),
-                    PRIMARY KEY (gram, doc_id)
+                    batch INTEGER NOT NULL,
+                    doc_count INTEGER NOT NULL,
+                    data BLOB NOT NULL,
+                    PRIMARY KEY (gram, batch)
                 ) WITHOUT ROWID;
             """)
-            docs, postings = [], []
+            docs = []
+            postings = defaultdict(bytearray)
+            previous = {}
+            frequencies = Counter()
+            batch = pending = 0
 
             def flush():
+                nonlocal batch, pending
                 with conn:
-                    conn.executemany("INSERT INTO documents VALUES (?, ?, ?)", docs)
-                    conn.executemany("INSERT INTO postings VALUES (?, ?)", postings)
+                    conn.executemany("INSERT INTO documents VALUES (?, ?, ?, ?)", docs)
+                    conn.executemany("INSERT INTO chunks VALUES (?, ?, ?, ?)",
+                                     ((g, batch, frequencies[g], blob)
+                                      for g, blob in postings.items()))
                 docs.clear()
                 postings.clear()
+                frequencies.clear()
+                pending = 0
+                batch += 1
 
             print("Building article body bigram inverted index...", flush=True)
             with input_path.open("rb") as raw:
@@ -97,10 +153,15 @@ def build(input_path, output_path, limit=0, batch_size=1000):
                         url = "https://ja.wikipedia.org/wiki/" + urllib.parse.quote(
                             title.replace(" ", "_"), safe="")
                         title = unicodedata.normalize("NFC", title)
-                        docs.append((doc_id, title, url))
-                        postings.extend((g, doc_id) for g in sorted(bigrams(body)))
+                        dense_id = count
+                        docs.append((dense_id, doc_id, title, url))
+                        for g in bigrams(body):
+                            append_varint(postings[g], dense_id - previous.get(g, 0))
+                            previous[g] = dense_id
+                            frequencies[g] += 1
+                            pending += 1
                         count += 1
-                        if len(docs) >= batch_size or len(postings) >= 200000:
+                        if len(docs) >= batch_size or pending >= 200000:
                             flush()
                         if limit and count >= limit:
                             break
@@ -108,7 +169,28 @@ def build(input_path, output_path, limit=0, batch_size=1000):
                     if source is not raw:
                         source.close()
             flush()
-            print("Finalizing index...", flush=True)
+            print("Merging compressed posting chunks...", flush=True)
+            # Chunks already encode deltas across batch boundaries, so concatenate
+            # in batch order without decoding or storing uncompressed pairs.
+            from itertools import groupby
+            cursor = conn.execute("SELECT gram,doc_count,data FROM chunks ORDER BY gram,batch")
+            merged = 0
+            for gram, rows in groupby(cursor, key=lambda row: row[0]):
+                blob = bytearray()
+                frequency = 0
+                for _, n, data in rows:
+                    blob.extend(data)
+                    frequency += n
+                conn.execute("INSERT INTO postings VALUES (?,?,?)",
+                             (gram, frequency, blob))
+                merged += 1
+                if merged % 10000 == 0:
+                    print(f"Merged {merged:,} grams", flush=True)
+            cursor.close()
+            conn.execute("DROP TABLE chunks")
+            conn.commit()
+            print("Compacting database...", flush=True)
+            conn.execute("VACUUM")
             conn.execute("ANALYZE")
             conn.commit()
         finally:
@@ -125,23 +207,25 @@ def search(conn, query, limit=20):
     grams = sorted(bigrams(query))
     if not grams:
         raise ValueError("query must contain at least two characters")
-    # Intersect posting lists; results are candidates, not verified substrings.
-    placeholders = ",".join("?" for _ in grams)
-    return conn.execute(f"""
-        SELECT d.id,d.title,d.url
-        FROM documents d JOIN (
-            SELECT doc_id FROM postings WHERE gram IN ({placeholders})
-            GROUP BY doc_id HAVING COUNT(*) = ?
-        ) p ON p.doc_id=d.id
-        ORDER BY d.id LIMIT ?
-    """, (*grams, len(grams), limit)).fetchall()
+    streams = []
+    for gram in grams:
+        row = conn.execute("SELECT doc_count,doc_ids FROM postings WHERE gram=?", (gram,)).fetchone()
+        if row is None:
+            return []
+        streams.append(row)
+    streams.sort(key=lambda row: row[0])
+    ids = decode_ids(streams[0][1])
+    for _, blob in streams[1:]:
+        ids = intersect(ids, decode_ids(blob))
+    return [conn.execute("SELECT id,title,url FROM documents WHERE id=?", (doc_id,)).fetchone()
+            for doc_id in islice(ids, limit)]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path,
                         default=Path("jawiki-latest-pages-articles.xml"))
-    parser.add_argument("--output", type=Path, default=Path("bigram_cs_index.sqlite"))
+    parser.add_argument("--output", type=Path, default=Path("bigram_cs_compressed.sqlite"))
     parser.add_argument("--limit", type=int, default=0, help="0: all matching computer science articles")
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--query", help="search an existing --output database instead")
