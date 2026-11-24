@@ -8,7 +8,7 @@ import time
 import unicodedata
 
 
-def build(corpus, output, max_lines=0, min_count=2, batch_lines=10000):
+def build(corpus, output, max_lines=0, min_count=2, batch_lines=10000, n_values=(1, 2, 3)):
     if min_count < 1 or batch_lines < 1 or max_lines < 0:
         raise ValueError("invalid limits")
     corpus, output = Path(corpus), Path(output)
@@ -69,7 +69,7 @@ def build(corpus, output, max_lines=0, min_count=2, batch_lines=10000):
                     line = unicodedata.normalize("NFC", raw.decode("utf-8").strip())
                     # Do not count across whitespace or line boundaries.
                     for word in line.split():
-                        for n in (1, 2, 3):
+                        for n in n_values:
                             totals[n] += max(0, len(word) - n + 1)
                             counts.update((n, word[i:i+n])
                                           for i in range(len(word)-n+1))
@@ -83,7 +83,7 @@ def build(corpus, output, max_lines=0, min_count=2, batch_lines=10000):
             print("Collection complete. Filtering low-frequency n-grams...", flush=True)
             with conn:
                 conn.executemany("INSERT INTO totals VALUES (?, ?)",
-                                 ((n, totals[n]) for n in (1, 2, 3)))
+                                 ((n, totals[n]) for n in n_values))
                 conn.execute("DELETE FROM ngrams WHERE cnt < ?", (min_count,))
                 conn.execute("""
                     CREATE VIEW probabilities AS
@@ -109,8 +109,11 @@ def main():
                         help="0 means the entire corpus")
     parser.add_argument("--min-count", type=int, default=2)
     parser.add_argument("--batch-lines", type=int, default=10000)
+    parser.add_argument("--n", type=int, choices=(1, 2, 3), nargs="+",
+                        default=[1, 2, 3], help="n-gram sizes to collect")
     args = parser.parse_args()
-    build(args.input, args.output, args.max_lines, args.min_count, args.batch_lines)
+    build(args.input, args.output, args.max_lines, args.min_count, args.batch_lines,
+          tuple(sorted(set(args.n))))
     print(args.output, args.output.stat().st_size, "bytes")
 
 
