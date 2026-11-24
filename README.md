@@ -204,3 +204,21 @@ python3 client.py "東京都内で運転を見合わせています" --json
 - `trigram_shards/`
 
 必要に応じて README 更新時点の実ファイル構成に合わせて整理してください。
+
+
+## Wikipedia 記事タイトルの Bigram 転置インデックス
+
+確率モデルとは別に、記事タイトルから Bigram → 記事 ID の対応を SQLite に構築します。本文は索引化しません。標準ライブラリのみで動作します。名前空間 0 の非リダイレクト記事を対象とし、XML/BZ2 ダンプを順次読み込みます。
+
+```bash
+python3 build_bigram_index.py --limit 10000 --output sample_index.sqlite
+python3 build_bigram_index.py --output bigram_index.sqlite
+python3 build_bigram_index.py --query 近畿大学
+```
+
+入力の既定値は jawiki-latest-pages-articles.xml です。圧縮ダンプは --input jawiki-latest-pages-articles.xml.bz2 で指定できます。出力は上書きしません。進捗は読み込みバイト数に基づく概算です。
+
+- documents(id, title, url): 記事カタログ
+- postings(gram, doc_id): 重複なしの転置インデックス
+
+検索時は Bigram ごとの文書 ID の積集合を求め、タイトルの部分一致を検証します。1 文字の場合はタイトルを直接走査します。Java の SQLite JDBC から参照できます。SQLite ファイルは Git 管理外です。
