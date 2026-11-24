@@ -206,19 +206,21 @@ python3 client.py "東京都内で運転を見合わせています" --json
 必要に応じて README 更新時点の実ファイル構成に合わせて整理してください。
 
 
-## Wikipedia 記事本文の Bigram 転置インデックス
+## Wikipedia 記事本文の圧縮 Bigram 転置インデックス
 
-Wikipedia XML/BZ2 ダンプの本文（Wikiマークアップを含む原文）を文字 Bigram に分割し、Bigram → 記事 ID の対応を SQLite に構築します。本文そのものは保存しません。名前空間 0 の非リダイレクト記事を対象とします。
+Wikipedia XML/BZ2 ダンプの本文（Wiki マークアップ原文）を文字 Bigram に分割します。本文・位置情報は保存しません。名前空間 0 の非リダイレクト記事のうち、タイトルまたはカテゴリのキーワードで情報科学関連の記事を抽出します（簡易的なヒューリスティック）。
 
 ```bash
-python3 build_bigram_index.py --limit 10000 --output sample_index.sqlite
+python3 build_bigram_index.py --limit 1000 --output sample.sqlite
 python3 build_bigram_index.py
-python3 build_bigram_index.py --query 近畿大学
+python3 build_bigram_index.py --query 自然言語
 ```
 
-入力の既定値は jawiki-latest-pages-articles.xml、出力は bigram_body_index.sqlite です。圧縮ダンプは --input jawiki-latest-pages-articles.xml.bz2 で指定できます。出力は上書きしません。
+既定の入力は jawiki-latest-pages-articles.xml、出力は bigram_cs_compressed.sqlite です。圧縮ダンプは --input jawiki-latest-pages-articles.xml.bz2 で指定できます。出力は上書きしません。
 
-- documents(id, title, url): 記事カタログ（本文なし）
-- postings(gram, doc_id): 重複なしの転置インデックス
+- documents(id, wiki_id, title, url): id は 0 からの連番
+- postings(gram, doc_count, doc_ids): doc_ids は昇順 ID の差分を unsigned LEB128 (Varint) で符号化した BLOB
 
-検索は Bigram ごとの記事 ID の積集合を返します。本文や位置情報を保持しないため、3 文字以上では文字列の連続性を保証できず、誤一致があり得ます。1 文字の検索は非対応です。Java の SQLite JDBC から参照できます。全記事の posting list は大きくなる可能性があるため、まず件数制限付きで容量を測定してください。
+各整数の下位 7 bit を順番に格納し、上位 bit が 1 なら次の byte に続きます。復号した差分を累積加算すると ID が得られます。最初の差分は 0 の場合もあります。バッチ間でも差分を連続させ、圧縮済みチャンクを最後に連結して VACUUM します。構築時には一時チャンクと最終 BLOB の両方のディスク領域が必要です。
+
+検索は復号した posting list の積集合を返します。3 文字以上の連続性は保証されず、1 文字検索は非対応です。Java の SQLite JDBC から BLOB を取得して同じ形式を復号できます。
