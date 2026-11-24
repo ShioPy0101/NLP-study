@@ -1,4 +1,4 @@
-"""Build a character-bigram inverted index of Japanese Wikipedia article titles."""
+"""Build a character-bigram inverted index of Japanese Wikipedia article wikitext without storing bodies."""
 import argparse
 from pathlib import Path
 import bz2
@@ -25,7 +25,8 @@ def pages(source):
         if event != "end" or elem.tag != ns + "page":
             continue
         if elem.findtext(ns + "ns") == "0" and elem.find(ns + "redirect") is None:
-            yield int(elem.findtext(ns + "id")), elem.findtext(ns + "title") or ""
+            yield (int(elem.findtext(ns + "id")), elem.findtext(ns + "title") or "",
+                   elem.findtext(ns + "revision/" + ns + "text") or "")
         root.remove(elem)
 
 
@@ -63,18 +64,18 @@ def build(input_path, output_path, limit=0, batch_size=1000):
                 docs.clear()
                 postings.clear()
 
-            print("Building title bigram inverted index...", flush=True)
+            print("Building article body bigram inverted index...", flush=True)
             with input_path.open("rb") as raw:
                 source = bz2.BZ2File(raw) if input_path.suffix == ".bz2" else raw
                 try:
-                    for doc_id, title in pages(source):
+                    for doc_id, title, body in pages(source):
                         url = "https://ja.wikipedia.org/wiki/" + urllib.parse.quote(
                             title.replace(" ", "_"), safe="")
                         title = unicodedata.normalize("NFC", title)
                         docs.append((doc_id, title, url))
-                        postings.extend((g, doc_id) for g in sorted(bigrams(title)))
+                        postings.extend((g, doc_id) for g in sorted(bigrams(body)))
                         count += 1
-                        if len(docs) >= batch_size:
+                        if len(docs) >= batch_size or len(postings) >= 200000:
                             flush()
                         now = time.monotonic()
                         if now - last_report >= 2:
@@ -110,10 +111,8 @@ def search(conn, query, limit=20):
         return []
     grams = sorted(bigrams(query))
     if not grams:
-        return conn.execute(
-            "SELECT id,title,url FROM documents WHERE instr(title,?)>0 ORDER BY id LIMIT ?",
-            (query, limit)).fetchall()
-    # Intersect posting lists, then verify the exact substring.
+        raise ValueError("query must contain at least two characters")
+    # Intersect posting lists; results are candidates, not verified substrings.
     placeholders = ",".join("?" for _ in grams)
     return conn.execute(f"""
         SELECT d.id,d.title,d.url
@@ -121,15 +120,15 @@ def search(conn, query, limit=20):
             SELECT doc_id FROM postings WHERE gram IN ({placeholders})
             GROUP BY doc_id HAVING COUNT(*) = ?
         ) p ON p.doc_id=d.id
-        WHERE instr(d.title,?)>0 ORDER BY d.id LIMIT ?
-    """, (*grams, len(grams), query, limit)).fetchall()
+        ORDER BY d.id LIMIT ?
+    """, (*grams, len(grams), limit)).fetchall()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path,
                         default=Path("jawiki-latest-pages-articles.xml"))
-    parser.add_argument("--output", type=Path, default=Path("bigram_index.sqlite"))
+    parser.add_argument("--output", type=Path, default=Path("bigram_body_index.sqlite"))
     parser.add_argument("--limit", type=int, default=0, help="0: all articles")
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--query", help="search an existing --output database instead")
