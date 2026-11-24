@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import unicodedata
 
 
@@ -41,11 +42,31 @@ def build(corpus, output, max_lines=0, min_count=2, batch_lines=10000):
                     """, ((n, g, c) for (n, g), c in counts.items()))
                 counts.clear()
 
-            with corpus.open(encoding="utf-8") as source:
-                for line_no, line in enumerate(source, 1):
+            total_bytes = corpus.stat().st_size
+            processed_bytes = processed_lines = 0
+            started = time.monotonic()
+            last_report = started
+
+            def report():
+                elapsed = max(time.monotonic() - started, 0.001)
+                fraction = (processed_bytes / total_bytes if total_bytes else 1.0)
+                if max_lines:
+                    fraction = max(fraction, processed_lines / max_lines)
+                fraction = min(fraction, 1.0)
+                eta = elapsed * (1 - fraction) / fraction if fraction else 0
+                print(f"Collecting: {fraction:6.2%} | {processed_lines:,} lines | "
+                      f"{processed_lines / elapsed:,.0f} lines/s | "
+                      f"ETA {eta / 60:.1f} min | DB {db.stat().st_size / 1048576:.1f} MiB",
+                      flush=True)
+
+            print("Collecting n-grams...", flush=True)
+            with corpus.open("rb") as source:
+                for line_no, raw in enumerate(source, 1):
                     if max_lines and line_no > max_lines:
                         break
-                    line = unicodedata.normalize("NFC", line.strip())
+                    processed_lines = line_no
+                    processed_bytes += len(raw)
+                    line = unicodedata.normalize("NFC", raw.decode("utf-8").strip())
                     # Do not count across whitespace or line boundaries.
                     for word in line.split():
                         for n in (1, 2, 3):
@@ -54,7 +75,12 @@ def build(corpus, output, max_lines=0, min_count=2, batch_lines=10000):
                                           for i in range(len(word)-n+1))
                     if line_no % batch_lines == 0 or len(counts) >= 500000:
                         flush()
+                    if time.monotonic() - last_report >= 2:
+                        report()
+                        last_report = time.monotonic()
             flush()
+            report()
+            print("Collection complete. Filtering low-frequency n-grams...", flush=True)
             with conn:
                 conn.executemany("INSERT INTO totals VALUES (?, ?)",
                                  ((n, totals[n]) for n in (1, 2, 3)))
@@ -65,7 +91,9 @@ def build(corpus, output, max_lines=0, min_count=2, batch_lines=10000):
                            CAST(g.cnt AS REAL)/t.cnt AS probability
                     FROM ngrams g JOIN totals t USING(n)
                 """)
+            print("Compacting SQLite (VACUUM)...", flush=True)
             conn.execute("VACUUM")
+            print("Writing final database...", flush=True)
         finally:
             conn.close()
         # Exclusive creation: never overwrite an existing output.
