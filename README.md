@@ -204,3 +204,26 @@ python3 client.py "東京都内で運転を見合わせています" --json
 - `trigram_shards/`
 
 必要に応じて README 更新時点の実ファイル構成に合わせて整理してください。
+
+
+## 検索課題向け文字 N-gram
+
+既存の SentencePiece 言語モデルとは独立に、文字単位の unigram / bigram / trigram の出現頻度を SQLite に集計します。Python 標準ライブラリのみで実行できます。
+
+```bash
+# 小規模試行
+python3 build_search_ngrams.py --max-lines 100000 --min-count 5 --output search_sample.sqlite
+
+# 全コーパス
+python3 build_search_ngrams.py --min-count 10
+```
+
+出力は search_ngrams.sqlite（既存ファイルは上書きしません）。wiki.txt は事前に用意してください。NFC 正規化後、空白・改行をまたがず Unicode コードポイント単位で集計します。低頻度の gram は集計後に除外します。確率の分母は除外前の全出現回数です。
+
+```sql
+SELECT gram, cnt, probability
+FROM probabilities
+WHERE n = 2 AND gram = '大学';
+```
+
+Java の SQLite JDBC から同じ SQL を実行できます。検索語と索引語の文字 bigram の重み付き Jaccard 類似度などに利用できます。未登録 gram の重みは別途平滑化してください。このデータベースは記事 ID を持たないため、全文検索の転置インデックスではありません。生成物は既存の .gitignore により Git 管理対象外です。
